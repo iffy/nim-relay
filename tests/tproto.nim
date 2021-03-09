@@ -1,3 +1,8 @@
+# Copyright (c) 2021 Matt Haggard. All rights reserved.
+#
+# This work is licensed under the terms of the MIT license.  
+# For a copy, see LICENSE.md in this repository.
+
 import unittest
 import os
 import options
@@ -5,14 +10,9 @@ import tables
 import sets
 import logging
 
-import ./relay
+import relay/proto
 import libsodium/sodium
-
-if os.getEnv("SHOW_LOGS") != "":
-  var L = newConsoleLogger()
-  addHandler(L)
-else:
-  echo "set SHOW_LOGS=something to see logs"
+import ./util
 
 type
   KeyPair = tuple
@@ -76,10 +76,6 @@ test "basic":
   let bob_id = bob.id
   check bob.id != alice_id
   relay.handleCommand(alice_id, RelayCommand(kind: Connect, conn_pubkey: bob.pk))
-  let bknock = bob.pop()
-  check bknock.kind == Knock
-  check bknock.knock_pubkey.string == pk.string
-
   relay.handleCommand(bob_id, RelayCommand(kind: Connect, conn_pubkey: pk))
   let bconn = bob.pop()
   check bconn.kind == Connected
@@ -102,22 +98,11 @@ test "basic":
   check bdata.data == "hello, bob!"
   check bdata.sender_id == bconn.conn_id
 
-test "knock on connect":
-  var relay = newRelay[StringClient]()
-  let alice = relay.connect()
-  let bobkeys = genkeys()
-  relay.handleCommand(alice.id, RelayCommand(kind: Connect, conn_pubkey: bobkeys[0]))
-  let bob = relay.connect(some(bobkeys))
-  let bknock = bob.pop()
-  check bknock.kind == Knock
-  check bknock.knock_pubkey.string == alice.pk.string
-
 test "multiple conns to same pubkey":
   var relay = newRelay[StringClient]()
   var alice = relay.connect()
   var bob = relay.connect()
   relay.handleCommand(alice.id, RelayCommand(kind: Connect, conn_pubkey: bob.pk))
-  discard bob.pop(Knock)
   relay.handleCommand(bob.id, RelayCommand(kind: Connect, conn_pubkey: alice.pk))
   discard alice.pop(Connected)
   discard bob.pop(Connected)
@@ -133,29 +118,18 @@ test "no crosstalk":
   var dave = relay.connect()
   relay.handleCommand(alice.id, RelayCommand(kind: Connect, conn_pubkey: bob.pk))
   relay.handleCommand(bob.id, RelayCommand(kind: Connect, conn_pubkey: alice.pk))
-  discard bob.pop(Knock)
   discard alice.pop(Connected)
   discard bob.pop(Connected)
   check cathy.received.len == 0
   check dave.received.len == 0
   relay.handleCommand(alice.id, RelayCommand(kind: Connect, conn_pubkey: dave.pk))
   relay.handleCommand(dave.id, RelayCommand(kind: Connect, conn_pubkey: alice.pk))
-  discard dave.pop(Knock)
   discard alice.pop(Connected)
   discard dave.pop(Connected)
   relay.sendData(alice.id, bob.id, "hi, bob")
   check bob.pop(Data).data == "hi, bob"
   check cathy.received.len == 0
   check dave.received.len == 0
-
-test "disconnect, remove knocks":
-  var relay = newRelay[StringClient]()
-  var alice = relay.connect()
-  let bobkeys = genkeys()
-  relay.handleCommand(alice.id, RelayCommand(kind: Connect, conn_pubkey: bobkeys.pk))
-  check relay.removeClient(alice.id) == true
-  let bob = relay.connect(some(bobkeys))
-  check bob.received.len == 0
 
 test "disconnect multiple times":
   var relay = newRelay[StringClient]()
@@ -169,7 +143,6 @@ test "disconnect, remove from remote client.connections":
   var bob = relay.connect()
   relay.handleCommand(alice.id, RelayCommand(kind: Connect, conn_pubkey: bob.pk))
   relay.handleCommand(bob.id, RelayCommand(kind: Connect, conn_pubkey: alice.pk))
-  discard bob.pop(Knock)
   discard alice.pop(Connected)
   discard bob.pop(Connected)
   check relay.removeClient(alice.id) == true
@@ -229,7 +202,6 @@ test "disconnect command":
   var bob = relay.connect()
   relay.handleCommand(alice.id, RelayCommand(kind: Connect, conn_pubkey: bob.pk))
   relay.handleCommand(bob.id, RelayCommand(kind: Connect, conn_pubkey: alice.pk))
-  discard bob.pop(Knock)
   discard alice.pop(Connected)
   discard bob.pop(Connected)
 

@@ -1,14 +1,18 @@
-This relay server lets machines send data to each other.
+This library contains code for making a relay server that lets machines send data to each other.  By default, it is a WebSockets server, though portions of this library may be used independently to offer a relay through a different protocol.
 
-The relay server can see all traffic, so clients that want privacy should use encryption.
+The relay server can see all traffic, so clients that want privacy should use encryption.  Clients should also authenticate each other through the relay.
+
+
+## Example
+
+TODO
+
+
+## Commands
 
 Clients send commands and receive events.
 
-The serialization format for commands and events is left up to users. However, an example implemention is provided below.
-
 Following are the commands and events:
-
-## Commands
 
 ### Iam = "i"
 
@@ -23,11 +27,9 @@ An `Error` event is sent if there's a problem.
 
 ### Connect = "c"
 
-`Connect(conn_pubkey: string)` - asks relay server to connect this client to another remote client identified by the given public key.
+`Connect(conn_pubkey: string)` - asks relay server to connect this client to another remote client identified by the given public key.  Two clients become connected when both have requested to connect to the other.
 
 - `conn_pubkey` is the public key of the client to connect to
-
-This will cause a `Knock` event to be sent to the client presenting `conn_pubkey` the next time it connects (or immediately, if it is already connected).
 
 Successful connection will be indicated with the `Connected` event.
 
@@ -62,12 +64,6 @@ An `Error` event is sent if there's a problem.
 
 `Authenticated` is emitted once the client has successfully authenticated.
 
-### Knock = "k"
-
-`Knock(knock_pubkey: string)` is emitted when another client wants to connect to this client.
-
-- `knock_pubkey` is the Libsodium public key identifying the remote client
-
 ### Connected = "c"
 
 `Connected(conn_pubkey: string, conn_id: int)` is emitted when this client has connected to a remote client.
@@ -95,10 +91,6 @@ An `Error` event is sent if there's a problem.
 
 - `err_message` is a string description of the error
 
-
-## Example implementation
-
-TODO
 
 ## Development
 

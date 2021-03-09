@@ -1,5 +1,10 @@
+# Copyright (c) 2021 Matt Haggard. All rights reserved.
+#
+# This work is licensed under the terms of the MIT license.  
+# For a copy, see LICENSE.md in this repository.
+
 import tables
-import sets
+import sets; export sets
 import strformat
 import strutils
 import base64
@@ -8,37 +13,33 @@ import libsodium/sodium
 import logging
 import ndb/sqlite
 
-template TODO(msg: string) =
+template TODO*(msg: string) =
   when defined(release): {.error: msg .}
-
-#----------------------------------------------------------
-# logging
-#----------------------------------------------------------
-proc toHex(s: string): string =
-  for c in s:
-    result.add(ord(c).toHex()[^2..^1])
 
 type
   PublicKey* = distinct string
   SecretKey* = distinct string
-  
+
+  KeyPair* = tuple
+    pk: PublicKey
+    sk: SecretKey
+
+  ## Relay event types
   EventKind* = enum
     Who = "?"
     Authenticated = "+"
-    Knock = "k"
     Connected = "c"
     Disconnected = "x"
     Data = "d"
     ErrorEvent = "E"
   
+  ## Relay events -- server to client message
   RelayEvent* = object
     case kind*: EventKind
     of Who:
       who_challenge*: string
     of Authenticated:
       discard
-    of Knock:
-      knock_pubkey*: PublicKey
     of Connected:
       conn_pubkey*: PublicKey
       conn_id*: int
@@ -51,12 +52,14 @@ type
     of ErrorEvent:
       err_message*: string
 
+  ## Relay command types
   CommandKind* = enum
     Iam = "i"
     Connect = "c"
     Disconnect = "x"
     SendData = "d"
   
+  ## Relay command - client to server message
   RelayCommand* = object
     case kind*: CommandKind
     of Iam:
@@ -108,6 +111,40 @@ proc `$`*(wrap: ClientWrap): string =
   else:
     result.add encode(wrap.pubkey.string)
   result.add "]"
+
+proc `==`*(a, b: PublicKey): bool {.borrow.}
+
+proc `==`*(a, b: RelayEvent): bool =
+  if a.kind != b.kind:
+    return false
+  else:
+    case a.kind
+    of Who:
+      return a.who_challenge == b.who_challenge
+    of Authenticated:
+      return true
+    of Connected:
+      return a.conn_id == b.conn_id and a.conn_pubkey == b.conn_pubkey
+    of Disconnected:
+      return a.dcon_id == b.dcon_id and a.dcon_pubkey == b.dcon_pubkey
+    of Data:
+      return a.sender_id == b.sender_id and a.data == b.data
+    of ErrorEvent:
+      return a.err_message == b.err_message
+
+proc `==`*(a, b: RelayCommand): bool =
+  if a.kind != b.kind:
+    return false
+  else:
+    case a.kind:
+    of Iam:
+      return a.iam_signature == b.iam_signature and a.iam_pubkey == b.iam_pubkey
+    of Connect:
+      return a.conn_pubkey == b.conn_pubkey
+    of Disconnect:
+      return a.dcon_id == b.dcon_id
+    of SendData:
+      return a.send_data == b.send_data and a.send_id == b.send_id
 
 when defined(testmode):
   proc dump*(relay: Relay): string =
@@ -185,12 +222,12 @@ proc addConnRequest*(relay: var Relay, alice_id: int, bob_pubkey: PublicKey) =
     # wait for bob to respond
     relay.db.exec(sql"INSERT INTO pending_conns (src_pk, dst_pk) VALUES (?, ?)",
       [dbValue(alice.pubkey.string), dbValue(bob_pubkey.string)])
-    row = relay.db.getRow(sql"SELECT client_id FROM clients WHERE pubkey = ?", [dbValue(bob_pubkey.string)])
-    if row.isSome:
-      let bob_id = row.get()[0].i.int
-      var bob = relay.clients[bob_id]
-      debug &"<knck {alice} -> {bob}"
-      bob.sendEvent(RelayEvent(kind: Knock, knock_pubkey: alice.pubkey))
+    # row = relay.db.getRow(sql"SELECT client_id FROM clients WHERE pubkey = ?", [dbValue(bob_pubkey.string)])
+    # if row.isSome:
+    #   let bob_id = row.get()[0].i.int
+    #   var bob = relay.clients[bob_id]
+    #   debug &"<knck {alice} -> {bob}"
+    #   bob.sendEvent(RelayEvent(kind: Knock, knock_pubkey: alice.pubkey))
 
 proc disconnect*(me, other: var ClientWrap) =
   ## Remove me from other's connections
@@ -205,8 +242,14 @@ proc handleCommand*(relay: var Relay, src: int, command: RelayCommand) =
   case command.kind
   of Iam:
     debug &">yebo {client}"
-    doAssert client.challenge != "", "Empty challenge not allowed"
-    crypto_sign_verify_detached(command.iam_pubkey.string, client.challenge, command.iam_signature)
+    if client.challenge == "":
+      client.sendError "Authentication cannot proceed. Reconnect and try again."
+    try:
+      crypto_sign_verify_detached(command.iam_pubkey.string, client.challenge, command.iam_signature)
+    except:
+      client.challenge = "" # disable authentication
+      client.sendError "Invalid signature"
+      return
     client.pubkey = command.iam_pubkey
     relay.db.exec(sql"UPDATE clients SET pubkey = ? WHERE client_id = ?",
       [dbValue(client.pubkey.string), dbValue(src)])
@@ -214,20 +257,20 @@ proc handleCommand*(relay: var Relay, src: int, command: RelayCommand) =
     client.sendEvent(RelayEvent(
       kind: Authenticated,
     ))
-    # Check for pending knocks
-    for row in relay.db.getAllRows(sql"""SELECT
-          a.client_id
-        FROM
-          pending_conns as p
-          left join clients as a
-            on p.src_pk = a.pubkey
-        WHERE
-          p.dst_pk = ?
-      """, [dbValue(client.pubkey.string)]):
-      let alice_id = row[0].i.int
-      var alice = relay.clients[alice_id]
-      debug &"<knck {alice} -> {client}"
-      client.sendEvent(RelayEvent(kind: Knock, knock_pubkey: alice.pubkey))
+    # # Check for pending knocks
+    # for row in relay.db.getAllRows(sql"""SELECT
+    #       a.client_id
+    #     FROM
+    #       pending_conns as p
+    #       left join clients as a
+    #         on p.src_pk = a.pubkey
+    #     WHERE
+    #       p.dst_pk = ?
+    #   """, [dbValue(client.pubkey.string)]):
+    #   let alice_id = row[0].i.int
+    #   var alice = relay.clients[alice_id]
+    #   debug &"<knck {alice} -> {client}"
+    #   client.sendEvent(RelayEvent(kind: Knock, knock_pubkey: alice.pubkey))
   of Connect:
     if client.pubkey.string == "":
       client.sendError "Connection forbidden"
@@ -262,6 +305,7 @@ template sendData*(relay: var Relay, from_id: int, to_id: int, data: string) =
 
 proc add*[T](relay: var Relay[T], client: T): int =
   ## Add a new client to the Relay, initiating authentication
+  ## Returns the client id
   var wrap = newWrap[T](client)
   wrap.client_id = relay.nextid
   relay.nextid.inc()
@@ -292,7 +336,7 @@ proc removeClient*[T](relay: var Relay[T], client_id: int): bool =
 #------------------------------------------------------------
 # utilities
 #------------------------------------------------------------
-proc genkeys*(): tuple[pk:PublicKey, sk:SecretKey] =
+proc genkeys*(): KeyPair =
   let (pk, sk) = crypto_sign_keypair()
   result = (pk.PublicKey, sk.SecretKey)
 
