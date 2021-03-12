@@ -38,14 +38,8 @@ proc pop(client: ClientHandler, k: EventKind): Future[RelayEvent] {.async, gcsaf
     else:
       await sleepAsync(10)
 
-type
-  AnonymousConfig = ref object
-
-proc newAnonymousConfig(): AnonymousConfig =
-  new(result)
-
 test "basic":
-  var server = newRelayServer(newAnonymousConfig())
+  var server = newRelayServer()
   server.listen(9001.Port, address="127.0.0.1")
 
   var c1h = newClientHandler()
